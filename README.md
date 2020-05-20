@@ -1,2 +1,2 @@
-# plugin-template
-A template for building Discord++ plugins
+# Plugin: RateLimit
+Ratelimiting for Discord API REST calls
