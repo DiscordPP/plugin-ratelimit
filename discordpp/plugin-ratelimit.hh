@@ -11,7 +11,6 @@ namespace discordpp{
 				sptr<const std::function<void()>> on_write,
 				sptr<const std::function<void(const json)>> on_read
 		) override{
-			auto id = ids.find(*targetURL);
 			BASE::call(
 					requestType, targetURL, body,
 					std::make_shared<std::function<void()>>(
