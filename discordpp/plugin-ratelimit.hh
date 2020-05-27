@@ -61,9 +61,9 @@ namespace discordpp{
 			}
 			
 			// Get the call to send
-			std::deque<sptr<Call>> &nextQueue = nextBucket ? nextBucket->queue : queue;
-			sptr<Call> call = nextQueue.front();
-			nextQueue.pop_back();
+			std::deque<sptr<Call>> *nextQueue = nextBucket ? &nextBucket->queue : &queue;
+			sptr<Call> call = nextQueue->front();
+			nextQueue->pop_front();
 			
 			// Calculate the route like before
 			std::size_t route = getLimitedRoute(*call->targetURL);
@@ -159,8 +159,8 @@ namespace discordpp{
 						}
 						
 						// Save the new bucket info
-						bucket->second.limit = headers["X-RateLimit-Limit"];
-						bucket->second.remaining = headers["X-RateLimit-Remaining"];
+						bucket->second.limit = std::stoi(headers["X-RateLimit-Limit"].get<std::string>());
+						bucket->second.remaining = std::stoi(headers["X-RateLimit-Remaining"].get<std::string>());
 						
 						// Reset the countdown timer for the new limit
 						bucket->second.reset.expires_after(std::chrono::seconds(std::stoi(headers["X-RateLimit-Remaining"].get<std::string>())));
@@ -288,11 +288,12 @@ namespace discordpp{
 		Bucket *getNext(){
 			Bucket *next = nullptr;
 			std::time_t first = std::numeric_limits<std::time_t>::max();
-			for(
-				auto &bucket : buckets
+			for(auto &bucket : buckets){
+				if(
+					!bucket.second.queue.empty() &&
+					bucket.second.remaining - bucket.second.transit.total() > 0 &&
+					first > bucket.second.queue.front()->created
 				){
-				if(bucket.second.remaining - bucket.second.transit.total() > 0 &&
-				   first > bucket.second.queue.front()->created){
 					next = &bucket.second;
 					first = next->queue.front()->created;
 				}
@@ -301,9 +302,7 @@ namespace discordpp{
 		}
 		
 		bool anyBucketLimited(){
-			for(
-				auto &bucket : buckets
-				){
+			for(auto &bucket : buckets){
 				if(bucket.second.remaining - bucket.second.transit.total() <= 0){
 					return true;
 				}
