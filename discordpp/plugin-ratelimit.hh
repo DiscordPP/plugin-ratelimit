@@ -8,8 +8,10 @@ namespace discordpp{
 	template<class BASE>
 	class PluginRateLimit: public BASE, virtual BotStruct{
 	public:
+		// The Discord API *typically* limits to 5 calls so use that for unknown buckets
 		int defaultLimit = 5;
 		
+		// Intercept calls
 		virtual void call(
 			sptr<const std::string> requestType,
 			sptr<const std::string> targetURL,
@@ -17,8 +19,11 @@ namespace discordpp{
 			sptr<const std::function<void()>> on_write,
 			sptr<const std::function<void(const json)>> on_read
 		) override{
+			// Get rough route category based on keywords + guild, server, and webhook IDs
 			std::size_t route = getLimitedRoute(*targetURL);
+			// Is this route bucketed
 			auto id = assigned.find(route);
+			// Place it on the global que if it isn't and the bucket queue if it is
 			std::deque<sptr<Call>> &target = id == assigned.end() ? queue : buckets.find(id->second)->second.queue;
 			queue.push_back(
 				std::make_shared<Call>(
@@ -32,65 +37,89 @@ namespace discordpp{
 					}
 				)
 			);
+			// Kickstart the send loop
 			go();
 		}
 	
 	private:
 		void go(){
+			// If already looping don't start a new loop
 			if(active) return;
 			active = true;
 			
+			// Identify the next call to send
 			Bucket *nextBucket = getNext();
+			// If the next thing to run isn't bucketed AND (
+			//     there's nothing to run OR
+			//     there's a possibility of filling an unknown bucket (Could be less restrictive) OR
+			//     the message could be assigned to a limited bucket
+			// )
+			// then we're done for now
 			if(nextBucket == nullptr && (queue.empty() || transit.total() >= defaultLimit || anyBucketLimited())){
 				active = false;
 				return;
 			}
 			
+			// Get the call to send
 			std::deque<sptr<Call>> &nextQueue = nextBucket ? nextBucket->queue : queue;
 			sptr<Call> call = nextQueue.front();
 			nextQueue.pop_back();
 			
+			// Calculate the route like before
 			std::size_t route = getLimitedRoute(*call->targetURL);
 			
+			// Do the call
 			BASE::call(
 				call->requestType, call->targetURL, call->body,
 				std::make_shared<std::function<void()>>(
-					[this, nextBucket, call, route](){
+					[this, nextBucket, call, route](){ // When the call is sent
+						// Done with this active cycle
 						active = false;
 						
+						// Count this call as on route to Discord
 						transit.insert(route);
 						if(nextBucket){
 							nextBucket->transit.insert(route);
 						}
 						
+						// Check if the cycle continues
 						go();
 						
+						// Run the user's onWrite callback
 						if(call->onWrite != nullptr){
 							(*call->onWrite)();
 						}
-						std::cout << "on_write" << std::endl;
 					}
 				),
 				std::make_shared<std::function<void(const json)>>(
-					[this, call, route](const json &msg){
+					[this, call, route](const json &msg){ // When Discord replies
+						// Find the existing bucket if there is one
 						auto id = assigned.find(route);
 						auto bucket = id == assigned.end() ? buckets.find(id->second) : buckets.end();
 						
+						// This message is no longer on route
 						transit.erase(route);
 						if(bucket != buckets.end()){
 							bucket->second.transit.erase(route);
 						}
 						
+						// Get the headers of the reply
 						const json &headers = msg["header"];
 						
+						// The the bucket is new or changed
 						if(id == assigned.end() || id->second != headers["X-RateLimit-Bucket"]){
+							// Save a reference to the old bucket
 							auto oldBucket = bucket;
 							
+							// Save the new bucket ID for this route
 							assigned.emplace(route, headers["X-RateLimit-Bucket"]);
 							id = assigned.find(route);
 							
+							// If it exists, get this route's new bucket
 							bucket = buckets.find(headers["X-RateLimit-Bucket"]);
+							// Otherwise create it
 							if(bucket == buckets.end()){
+								// Create the bucket with dummy data to overwrite
 								buckets.emplace(
 									headers["X-RateLimit-Bucket"].get<std::string>(),
 									Bucket{0, 0, boost::asio::steady_timer(*aioc)}
@@ -98,7 +127,7 @@ namespace discordpp{
 								bucket = buckets.find(headers["X-RateLimit-Bucket"]);
 							}
 							
-							{
+							{ // Move queued calls with the same route to their new queue
 								auto oldQueue = oldBucket != buckets.end() ? oldBucket->second.queue : queue;
 								bool sort = false;
 								for(auto c = oldQueue.begin(); c != oldQueue.end();){
@@ -121,20 +150,30 @@ namespace discordpp{
 								}
 							}
 							
+							// Categorize the calls in transit
 							if(oldBucket != buckets.end()){
 								bucket->second.transit.move(bucket->second.transit, route);
+							}else{
+								bucket->second.transit.copy(bucket->second.transit, route);
 							}
 						}
 						
+						// Save the new bucket info
 						bucket->second.limit = headers["X-RateLimit-Limit"];
 						bucket->second.remaining = headers["X-RateLimit-Remaining"];
+						
+						// Reset the countdown timer for the new limit
 						bucket->second.reset.expires_after(std::chrono::seconds(std::stoi(headers["X-RateLimit-Remaining"].get<std::string>())));
 						bucket->second.reset.async_wait([this, owner = &bucket->second](const boost::system::error_code& e){
+							// Don't reset the limit if the timer is cancelled
 							if(e.failed()) return;
+							// Reset the limit
 							owner->remaining = owner->limit;
+							// Kickstart the message sending process
 							go();
 						});
 						
+						// Run the user's onRead callback
 						if(call->onRead != nullptr){
 							(*call->onRead)(msg);
 						}
