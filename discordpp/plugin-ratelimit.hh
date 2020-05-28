@@ -231,11 +231,14 @@ namespace discordpp{
 						
 						// Reset the countdown timer for the new limit
 						bucket->second.reset.expires_after(
-							std::chrono::seconds(std::stoi(headers["X-RateLimit-Remaining"].get<std::string>())));
+							std::chrono::seconds(std::stoi(headers["X-RateLimit-Reset-After"].get<std::string>())));
 						bucket->second.reset.async_wait(
 							[this, owner = &bucket->second](const boost::system::error_code &e){
 								// Don't reset the limit if the timer is cancelled
 								if(e.failed()) return;
+								log::log(log::trace, [owner](std::ostream *log){
+									*log << "Limit reset for " << owner->id << '\n';
+								});
 								// Reset the limit
 								owner->remaining = owner->limit;
 								// Kickstart the message sending process
