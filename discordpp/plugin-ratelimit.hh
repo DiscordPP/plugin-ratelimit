@@ -4,6 +4,8 @@
 #include <map>
 #include <set>
 
+#include <discordpp/log.hh>
+
 namespace discordpp{
 	template<class BASE>
 	class PluginRateLimit: public BASE, virtual BotStruct{
@@ -19,12 +21,35 @@ namespace discordpp{
 			sptr<const std::function<void()>> on_write,
 			sptr<const std::function<void(const json)>> on_read
 		) override{
+			log::log(
+				log::trace, [targetURL, body](std::ostream *log){
+					*log << "Plugin: RateLimit: " << "Intercepted " << *targetURL << (body ? body->dump(4) : "{}")
+					     << '\n';
+				}
+			);
+			
 			// Get rough route category based on keywords + guild, server, and webhook IDs
 			std::size_t route = getLimitedRoute(*targetURL);
+			log::log(
+				log::trace, [route](std::ostream *log){
+					*log << "\troute: " << route << '\n';
+				}
+			);
 			// Is this route bucketed
 			auto id = assigned.find(route);
+			log::log(
+				log::trace, [this, id](std::ostream *log){
+					*log << "\tbucket: " << (id == assigned.end() ? "Uncategorised" : id->second) << '\n';
+				}
+			);
+			
 			// Place it on the global que if it isn't and the bucket queue if it is
 			std::deque<sptr<Call>> &target = id == assigned.end() ? queue : buckets.find(id->second)->second.queue;
+			log::log(
+				log::trace, [this, target](std::ostream *log){
+					*log << "\tbehind: " << target.size() << '\n';
+				}
+			);
 			queue.push_back(
 				std::make_shared<Call>(
 					Call{
@@ -47,8 +72,35 @@ namespace discordpp{
 			if(active) return;
 			active = true;
 			
+			log::log(
+				log::trace, [](std::ostream *log){
+					*log << "Starting RateLimit loop\n";
+				}
+			);
+			
 			// Identify the next call to send
 			Bucket *nextBucket = getNext();
+			log::log(
+				log::trace, [this, nextBucket](std::ostream *log){
+					if(nextBucket == nullptr){
+						const bool bucketLimited = anyBucketLimited();
+						*log << "Plugin: RateLimit: The next call is not from a bucket, "
+						     << "the global queue is " << (queue.empty() ? "" : "not ") << "empty, "
+						     << "there are " << transit.total() << '/' << defaultLimit << " messages in transit, "
+						     << "and there is " << (bucketLimited ? "" : "not ") << "a limited bucket.\n"
+						     << "Therefore " << (
+						     	(queue.empty() || transit.total() >= defaultLimit || anyBucketLimited())
+						     	? "the RateLimit loop is done for now."
+						     	: "the next call is from the uncategorised queue."
+						     	) << '\n';
+					}else{
+						*log << "Next call bucket: " << nextBucket->id << '\n'
+						     << "\tt " << nextBucket->transit.total()
+						     << " | r" << nextBucket->remaining
+						     << " | l" << nextBucket->limit << '\n';
+					}
+				}
+			);
 			// If the next thing to run isn't bucketed AND (
 			//     there's nothing to run OR
 			//     there's a possibility of filling an unknown bucket (Could be less restrictive) OR
@@ -65,6 +117,14 @@ namespace discordpp{
 			sptr<Call> call = nextQueue->front();
 			nextQueue->pop_front();
 			
+			log::log(
+				log::trace, [call](std::ostream *log){
+					*log << "Plugin: RateLimit: " << "Calling " << call->targetURL
+					     << (call->body ? call->body->dump(4) : "{}")
+					     << '\n';
+				}
+			);
+			
 			// Calculate the route like before
 			std::size_t route = getLimitedRoute(*call->targetURL);
 			
@@ -80,6 +140,8 @@ namespace discordpp{
 						transit.insert(route);
 						if(nextBucket){
 							nextBucket->transit.insert(route);
+						}else{
+							utransit.insert(route);
 						}
 						
 						// Check if the cycle continues
@@ -101,6 +163,8 @@ namespace discordpp{
 						transit.erase(route);
 						if(bucket != buckets.end()){
 							bucket->second.transit.erase(route);
+						}else{
+							utransit.erase(route);
 						}
 						
 						// Get the headers of the reply
@@ -122,7 +186,10 @@ namespace discordpp{
 								// Create the bucket with dummy data to overwrite
 								buckets.emplace(
 									headers["X-RateLimit-Bucket"].get<std::string>(),
-									Bucket{0, 0, boost::asio::steady_timer(*aioc)}
+									Bucket{
+										headers["X-RateLimit-Bucket"].get<std::string>(), 0, 0,
+										boost::asio::steady_timer(*aioc)
+									}
 								);
 								bucket = buckets.find(headers["X-RateLimit-Bucket"]);
 							}
@@ -152,9 +219,9 @@ namespace discordpp{
 							
 							// Categorize the calls in transit
 							if(oldBucket != buckets.end()){
-								bucket->second.transit.move(bucket->second.transit, route);
+								oldBucket->second.transit.move(bucket->second.transit, route);
 							}else{
-								bucket->second.transit.copy(bucket->second.transit, route);
+								utransit.move(bucket->second.transit, route);
 							}
 						}
 						
@@ -163,15 +230,18 @@ namespace discordpp{
 						bucket->second.remaining = std::stoi(headers["X-RateLimit-Remaining"].get<std::string>());
 						
 						// Reset the countdown timer for the new limit
-						bucket->second.reset.expires_after(std::chrono::seconds(std::stoi(headers["X-RateLimit-Remaining"].get<std::string>())));
-						bucket->second.reset.async_wait([this, owner = &bucket->second](const boost::system::error_code& e){
-							// Don't reset the limit if the timer is cancelled
-							if(e.failed()) return;
-							// Reset the limit
-							owner->remaining = owner->limit;
-							// Kickstart the message sending process
-							go();
-						});
+						bucket->second.reset.expires_after(
+							std::chrono::seconds(std::stoi(headers["X-RateLimit-Remaining"].get<std::string>())));
+						bucket->second.reset.async_wait(
+							[this, owner = &bucket->second](const boost::system::error_code &e){
+								// Don't reset the limit if the timer is cancelled
+								if(e.failed()) return;
+								// Reset the limit
+								owner->remaining = owner->limit;
+								// Kickstart the message sending process
+								go();
+							}
+						);
 						
 						// Run the user's onRead callback
 						if(call->onRead != nullptr){
@@ -256,6 +326,8 @@ namespace discordpp{
 		};
 		
 		struct Bucket{
+			std::string id;
+			
 			int limit;
 			int remaining;
 			//int reset;
@@ -278,6 +350,7 @@ namespace discordpp{
 		};
 		
 		CountedSet<std::size_t> transit;
+		CountedSet<std::size_t> utransit;
 		std::deque<sptr < Call>> queue;
 		
 		bool active = false;
@@ -303,7 +376,7 @@ namespace discordpp{
 		
 		bool anyBucketLimited(){
 			for(auto &bucket : buckets){
-				if(bucket.second.remaining - bucket.second.transit.total() <= 0){
+				if(bucket.second.remaining - bucket.second.transit.total() - utransit.total() <= 0){
 					return true;
 				}
 			}
