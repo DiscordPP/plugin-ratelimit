@@ -69,8 +69,8 @@ namespace discordpp{
 			for(auto& be : buckets){
 				if(route_to_bucket.count(gateway_route) && route_to_bucket[gateway_route] == be.second.id) continue;
 				//assert(be.second.remaining >= be.second.transit.total() && "More messages in transit than remaining in a bucket");
-				min_remaining = std::min(min_remaining, int(be.second.remaining - be.second.transit.total()));
-				if(be.second.remaining <= be.second.transit.total()) continue;
+				min_remaining = std::min(min_remaining, int(be.second.remaining - (be.second.transit.total() + transit.total())));
+				if(be.second.remaining <= be.second.transit.total() + transit.total()) continue;
 				for(auto& qe : be.second.queues){
 					assert(!qe.second.empty() && "Encountered an empty queue in a bucket");
 					auto created = qe.second.front()->created;
@@ -100,7 +100,7 @@ namespace discordpp{
 			// Can we send a message?
 			// If we found a next bucket, yes.
 			// If the uncategorized queue isn't empty and there's no chance of overflowing a bucket, yes.
-			if(!next_bucket && (queues.empty() || min_remaining <= transit.total())){
+			if(!next_bucket && (queues.empty() || min_remaining <= 0)){
 				writing = false;
 				return;
 			}
