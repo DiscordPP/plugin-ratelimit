@@ -67,7 +67,7 @@ namespace discordpp{
 			std::time_t min = std::numeric_limits<std::time_t>::max();
 			for(auto& be : buckets){
 				if(route_to_bucket.count(gateway_route) && route_to_bucket[gateway_route] == be.second.id) continue;
-				assert(be.second.remaining >= be.second.transit.total() && "More messages in transit than remaining in a bucket");
+				//assert(be.second.remaining >= be.second.transit.total() && "More messages in transit than remaining in a bucket");
 				min_remaining = std::min(min_remaining, int(be.second.remaining - be.second.transit.total()));
 				if(be.second.remaining <= be.second.transit.total()) continue;
 				for(auto& qe : be.second.queues){
@@ -157,16 +157,12 @@ namespace discordpp{
 								auto* old_bucket = bucket;
 								
 								route_to_bucket[route] = new_id;
-								std::cerr << buckets.count(new_id) << '\n';
 								bucket = &buckets.emplace(new_id, Bucket{new_id}).first->second;
 								
 								std::cerr << "Migrating from " << (old_bucket ? old_bucket->id : "global") << " to " << bucket->id << '\n';
-								std::cerr << bucket->queues.count(route) << '\n';
 								
 								bucket->queues.insert((old_bucket ? old_bucket->queues : queues).extract(route));
 								(old_bucket ? old_bucket->transit : transit).move(bucket->transit, route);
-								
-								std::cerr << bucket->queues.count(route) << '\n';
 							}
 						}
 						
