@@ -295,19 +295,24 @@ namespace discordpp{
 		const route_t gateway_route = getLimitedRoute("/gateway/bot");
 		route_t getLimitedRoute(const std::string &route){
 			std::ostringstream out;
-			route_t last = route.find('/');
-			route_t next = route.find('/', last + 1);
+			size_t next = route.find('/');
 			std::string lastItem;
-			while(last != std::string::npos){
-				std::string item = route.substr(last + 1, next - 1);
+			while(next != std::string::npos){
+				size_t end = route.find('/', next + 1);
+				
+				std::string item = (end != std::string::npos
+				                    ? route.substr(next + 1,  end - next - 1)
+				                    : route.substr(next + 1)
+				);
+				
 				out << "|";
 				if(std::all_of(item.begin(), item.end(), [](char c){return std::isalpha(c);}) ||
 				   lastItem == "channels" || lastItem == "guilds" || lastItem == "webhooks"){
 					out << item;
 				}
 				lastItem = item;
-				last = next;
-				next = route.find('/', last + 1);
+				
+				next = end;
 			}
 			return std::hash<std::string>{}(out.str());
 		}
