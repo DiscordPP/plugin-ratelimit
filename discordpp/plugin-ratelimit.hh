@@ -1,14 +1,19 @@
 #pragma once
 
-#include <deque>
+#include <queue>
 #include <map>
 #include <set>
+#include <algorithm>
 
 #include <discordpp/log.hh>
 
 namespace discordpp{
+	using route_t = std::size_t;
+	
 	template<class BASE>
 	class PluginRateLimit: public BASE, virtual BotStruct{
+		struct Call;
+		using QueueByRoute = std::map<route_t, std::queue<sptr<Call>>>;
 	public:
 		// The Discord API *typically* limits to 5 calls so use that for unknown buckets
 		int defaultLimit = 5;
@@ -18,8 +23,8 @@ namespace discordpp{
 			sptr<const std::string> requestType,
 			sptr<const std::string> targetURL,
 			sptr<const json> body,
-			sptr<const std::function<void()>> on_write,
-			sptr<const std::function<void(const json)>> on_read
+			sptr<const std::function<void()>> onWrite,
+			sptr<const std::function<void(const json)>> onRead
 		) override{
 			log::log(
 				log::trace, [targetURL, body](std::ostream *log){
@@ -28,124 +33,106 @@ namespace discordpp{
 				}
 			);
 			
-			// Get rough route category based on keywords + guild, server, and webhook IDs
-			std::size_t route = getLimitedRoute(*targetURL);
-			log::log(
-				log::trace, [route](std::ostream *log){
-					*log << "\troute: " << route << '\n';
-				}
-			);
-			// Is this route bucketed
-			auto id = assigned.find(route);
-			log::log(
-				log::trace, [this, id](std::ostream *log){
-					*log << "\tbucket: " << (id == assigned.end() ? "Uncategorised" : id->second) << '\n';
-				}
-			);
+			auto the_call = std::make_shared<Call>(Call{
+				requestType,
+				targetURL,
+				getLimitedRoute(*targetURL),
+				body,
+				onWrite,
+				onRead
+			});
 			
-			// Place it on the global que if it isn't and the bucket queue if it is
-			std::deque<sptr<Call>> &target = id == assigned.end() ? queue : buckets.find(id->second)->second.queue;
-			log::log(
-				log::trace, [this, target](std::ostream *log){
-					*log << "\tbehind: " << target.size() << '\n';
-				}
-			);
-			queue.push_back(
-				std::make_shared<Call>(
-					Call{
-						requestType,
-						targetURL,
-						route,
-						body,
-						on_write,
-						on_read
-					}
-				)
-			);
+			std::cerr << "Hash " << the_call->route << '\n';
+			
+			(route_to_bucket.count(the_call->route)
+				? buckets[route_to_bucket[the_call->route]].queues
+				: queues
+			)[the_call->route].push(the_call);
+			
 			// Kickstart the send loop
-			go();
+			aioc->post([this]{do_some_work();});
 		}
 	
 	private:
-		void go(){
+		void do_some_work(){
 			// If already looping don't start a new loop
-			if(active) return;
-			active = true;
+			if(writing) return;
+			writing = true;
 			
-			log::log(
-				log::trace, [](std::ostream *log){
-					*log << "Starting RateLimit loop\n";
-				}
-			);
-			
-			// Identify the next call to send
-			Bucket *nextBucket = getNext();
-			log::log(
-				log::trace, [this, nextBucket](std::ostream *log){
-					if(nextBucket == nullptr){
-						const bool bucketLimited = anyBucketLimited();
-						*log << "Plugin: RateLimit: The next call is not from a bucket, "
-						     << "the global queue is " << (queue.empty() ? "" : "not ") << "empty, "
-						     << "there are " << transit.total() << '/' << defaultLimit << " messages in transit, "
-						     << "and there is " << (bucketLimited ? "" : "not ") << "a limited bucket.\n"
-						     << "Therefore " << (
-						     	(queue.empty() || transit.total() >= defaultLimit || anyBucketLimited())
-						     	? "the RateLimit loop is done for now."
-						     	: "the next call is from the uncategorised queue."
-						     	) << '\n';
-					}else{
-						*log << "Next call bucket: " << nextBucket->id << '\n'
-						     << "\tt " << nextBucket->transit.total()
-						     << " | r" << nextBucket->remaining
-						     << " | l" << nextBucket->limit << '\n';
+			Bucket* next_bucket = nullptr;
+			QueueByRoute* next_queues = nullptr;
+			CountedSet<route_t>* next_transit = nullptr;
+			route_t next_route = 0;
+			int min_remaining = defaultLimit;
+			std::time_t min = std::numeric_limits<std::time_t>::max();
+			for(auto& be : buckets){
+				if(route_to_bucket.count(gateway_route) && route_to_bucket[gateway_route] == be.second.id) continue;
+				assert(be.second.remaining >= be.second.transit.total() && "More messages in transit than remaining in a bucket");
+				min_remaining = std::min(min_remaining, int(be.second.remaining - be.second.transit.total()));
+				if(be.second.remaining <= be.second.transit.total()) continue;
+				for(auto& qe : be.second.queues){
+					assert(!qe.second.empty() && "Encountered an empty queue in a bucket");
+					auto created = qe.second.front()->created;
+					if(created < min){
+						min = created;
+						next_bucket = &be.second;
+						next_queues = &be.second.queues;
+						next_transit = &be.second.transit;
+						next_route = qe.first;
 					}
 				}
-			);
-			// If the next thing to run isn't bucketed AND (
-			//     there's nothing to run OR
-			//     there's a possibility of filling an unknown bucket (Could be less restrictive) OR
-			//     the message could be assigned to a limited bucket
-			// )
-			// then we're done for now
-			if(nextBucket == nullptr && (queue.empty() || transit.total() >= defaultLimit || anyBucketLimited())){
-				active = false;
+			}
+			
+			// `queues` may be empty
+			for(auto& qe : queues){
+				assert(!qe.second.empty() && "Encountered an empty global queue");
+				auto created = qe.second.front()->created;
+				if(created < min){
+					min = created;
+					next_bucket = nullptr;
+					next_queues = &queues;
+					next_transit = &transit;
+					next_route = qe.first;
+				}
+			}
+			
+			// Can we send a message?
+			// If we found a next bucket, yes.
+			// If the uncategorized queue isn't empty and there's no chance of overflowing a bucket, yes.
+			if(!next_bucket && (queues.empty() || min_remaining <= transit.total())){
+				writing = false;
 				return;
 			}
 			
-			// Get the call to send
-			std::deque<sptr<Call>> *nextQueue = nextBucket ? &nextBucket->queue : &queue;
-			sptr<Call> call = nextQueue->front();
-			nextQueue->pop_front();
+			// Get the next call and delete its queue if empty
+			auto next_queue = next_queues->find(next_route);
+			auto call = next_queue->second.front();
+			next_queue->second.pop();
+			if(next_queue->second.empty()){
+				next_queues->erase(next_route);
+			}
 			
 			log::log(
 				log::trace, [call](std::ostream *log){
-					*log << "Plugin: RateLimit: " << "Calling " << call->targetURL
-					     << (call->body ? call->body->dump(4) : "{}")
+					*log << "Plugin: RateLimit: " << "Sending " << *call->targetURL << (call->body ? call->body->dump(4) : "{}")
 					     << '\n';
 				}
 			);
 			
-			// Calculate the route like before
-			std::size_t route = getLimitedRoute(*call->targetURL);
-			
 			// Do the call
+			// Note: We are binding raw pointers and we must guarantee their lifetimes
 			BASE::call(
 				call->requestType, call->targetURL, call->body,
 				std::make_shared<std::function<void()>>(
-					[this, nextBucket, call, route](){ // When the call is sent
-						// Done with this active cycle
-						active = false;
-						
-						// Count this call as on route to Discord
-						transit.insert(route);
-						if(nextBucket){
-							nextBucket->transit.insert(route);
-						}else{
-							utransit.insert(route);
-						}
+					[this, route = next_route, call](){ // When the call is sent
+						(route_to_bucket.count(route)
+							? buckets[route_to_bucket[route]].transit
+							: transit
+						).insert(route);
+						writing = false;
 						
 						// Check if the cycle continues
-						go();
+						aioc->post([this]{do_some_work();});
 						
 						// Run the user's onWrite callback
 						if(call->onWrite != nullptr){
@@ -153,87 +140,46 @@ namespace discordpp{
 						}
 					}
 				),
-				std::make_shared<std::function<void(const json)>>(
-					[this, call, route](const json &msg){ // When Discord replies
-						// Find the existing bucket if there is one
-						auto id = assigned.find(route);
-						auto bucket = id == assigned.end() ? buckets.find(id->second) : buckets.end();
+				std::make_shared<std::function<void(const json msg)>>(
+					[this, route = next_route, call](const json& msg){ // When Discord replies
+						auto* bucket = (
+							route_to_bucket.count(route)
+							? &buckets[route_to_bucket[route]]
+							: nullptr
+						);
+						auto& headers = msg["header"];
 						
-						// This message is no longer on route
-						transit.erase(route);
-						if(bucket != buckets.end()){
-							bucket->second.transit.erase(route);
-						}else{
-							utransit.erase(route);
-						}
+						(bucket ? bucket->transit : transit).erase(route);
 						
-						// Get the headers of the reply
-						const json &headers = msg["header"];
-						
-						// The the bucket is new or changed
-						if(id == assigned.end() || id->second != headers["X-RateLimit-Bucket"]){
-							// Save a reference to the old bucket
-							auto oldBucket = bucket;
-							
-							// Save the new bucket ID for this route
-							assigned.emplace(route, headers["X-RateLimit-Bucket"]);
-							id = assigned.find(route);
-							
-							// If it exists, get this route's new bucket
-							bucket = buckets.find(headers["X-RateLimit-Bucket"]);
-							// Otherwise create it
-							if(bucket == buckets.end()){
-								// Create the bucket with dummy data to overwrite
-								buckets.emplace(
-									headers["X-RateLimit-Bucket"].get<std::string>(),
-									Bucket{
-										headers["X-RateLimit-Bucket"].get<std::string>(), 0, 0,
-										boost::asio::steady_timer(*aioc)
-									}
-								);
-								bucket = buckets.find(headers["X-RateLimit-Bucket"]);
-							}
-							
-							{ // Move queued calls with the same route to their new queue
-								auto oldQueue = oldBucket != buckets.end() ? oldBucket->second.queue : queue;
-								bool sort = false;
-								for(auto c = oldQueue.begin(); c != oldQueue.end();){
-									if((*c)->route == route){
-										sort = true;
-										bucket->second.queue.push_back(*c);
-										c = oldQueue.erase(c);
-									}else{
-										c++;
-									}
-								}
-								if(sort){
-									std::sort(
-										bucket->second.queue.begin(),
-										bucket->second.queue.end(),
-										[](auto a, auto b){
-											return a->created < b->created;
-										}
-									);
-								}
-							}
-							
-							// Categorize the calls in transit
-							if(oldBucket != buckets.end()){
-								oldBucket->second.transit.move(bucket->second.transit, route);
-							}else{
-								utransit.move(bucket->second.transit, route);
+						{
+							auto new_id = headers["X-RateLimit-Bucket"].get<std::string>();
+							if(!bucket || bucket->id != new_id){
+								auto* old_bucket = bucket;
+								
+								route_to_bucket[route] = new_id;
+								std::cerr << buckets.count(new_id) << '\n';
+								bucket = &buckets.emplace(new_id, Bucket{new_id}).first->second;
+								
+								std::cerr << "Migrating from " << (old_bucket ? old_bucket->id : "global") << " to " << bucket->id << '\n';
+								std::cerr << bucket->queues.count(route) << '\n';
+								
+								bucket->queues.insert((old_bucket ? old_bucket->queues : queues).extract(route));
+								(old_bucket ? old_bucket->transit : transit).move(bucket->transit, route);
+								
+								std::cerr << bucket->queues.count(route) << '\n';
 							}
 						}
 						
-						// Save the new bucket info
-						bucket->second.limit = std::stoi(headers["X-RateLimit-Limit"].get<std::string>());
-						bucket->second.remaining = std::stoi(headers["X-RateLimit-Remaining"].get<std::string>());
+						bucket->limit = std::stoi(headers["X-RateLimit-Limit"].get<std::string>());
+						bucket->remaining = std::min(bucket->remaining, std::stoi(headers["X-RateLimit-Remaining"].get<std::string>()));
 						
-						// Reset the countdown timer for the new limit
-						bucket->second.reset.expires_after(
-							std::chrono::seconds(std::stoi(headers["X-RateLimit-Reset-After"].get<std::string>())));
-						bucket->second.reset.async_wait(
-							[this, owner = &bucket->second](const boost::system::error_code &e){
+						bucket->reset.reset();
+						bucket->reset = std::make_unique<boost::asio::steady_timer>(*aioc);
+						bucket->reset->expires_after(
+							std::chrono::seconds(std::stoi(headers["X-RateLimit-Reset-After"].get<std::string>()))
+						);
+						bucket->reset->async_wait(
+							[this, owner = bucket](const boost::system::error_code &e){
 								// Don't reset the limit if the timer is cancelled
 								if(e.failed()) return;
 								log::log(log::trace, [owner](std::ostream *log){
@@ -242,7 +188,7 @@ namespace discordpp{
 								// Reset the limit
 								owner->remaining = owner->limit;
 								// Kickstart the message sending process
-								go();
+								aioc->post([this]{do_some_work();});
 							}
 						);
 						
@@ -258,7 +204,7 @@ namespace discordpp{
 		struct Call{
 			sptr<const std::string> requestType;
 			sptr<const std::string> targetURL;
-			std::size_t route;
+			route_t route;
 			sptr<const json> body;
 			sptr<const std::function<void()>> onWrite;
 			sptr<const std::function<void(const json)>> onRead;
@@ -267,139 +213,101 @@ namespace discordpp{
 		
 		template<typename T>
 		struct CountedSet{
-			unsigned int total() const{
+			size_t total() const{
 				return sum;
 			}
 			
-			unsigned int count(T t) const{
-				auto entry = map.find(t);
-				if(entry != map.end()){
-					return entry->second;
-				}else{
-					return 0;
-				}
+			size_t count(T t) const{
+				return (map.count(t)
+				        ? map.at(t)
+				        : 0
+				);
 			}
 			
 			bool empty() const{
 				return !sum;
 			}
 			
-			void insert(T t, unsigned int count = 1){
-				if(count){
-					auto entry = map.find(t);
-					sum += count;
-					if(entry != map.end()){
-						entry->second++;
-					}else{
-						map.emplace(t, 1);
-					}
+			void insert(T t, size_t count = 1){
+				if(!count) return;
+				
+				auto entry = map.find(t);
+				sum += count;
+				if(entry != map.end()){
+					entry->second += count;
+				}else{
+					map.emplace(t, count);
 				}
 			}
 			
-			void erase(T t, unsigned int count = 1){
-				if(count){
-					auto entry = map.find(t);
-					if(entry != map.end()){
-						sum -= count;
-						entry->second -= count;
-						if(entry->second == 0){
-							map.erase(t);
-						}
-					}
+			void erase(T t, size_t count = 1){
+				if(!count) return;
+				
+				auto entry = map.find(t);
+				if(entry == map.end()) throw "Erased a key that doesn't exist";
+				if(count > entry->second) throw "Erased a key by more than its value";
+				sum -= count;
+				entry->second -= count;
+				if(entry->second == 0){
+					map.erase(t);
 				}
 			}
 			
-			int clear(T t){
-				int num = count(t);
-				erase(t, num);
+			size_t clear(T t){
+				auto num = count(t);
+				map.erase(t);
 				return num;
 			}
 			
-			void move(CountedSet &other, T t){
+			void move(CountedSet<T> &other, T t){
 				other.insert(t, clear(t));
 			}
 			
-			void copy(CountedSet &other, T t){
+			void copy(CountedSet<T> &other, T t){
 				other.insert(t, count(t));
 			}
 		
 		private:
-			unsigned int sum = 0;
-			std::map<T, unsigned int> map;
+			size_t sum = 0;
+			std::map<T, size_t> map;
 		};
 		
 		struct Bucket{
 			std::string id;
 			
-			int limit;
-			int remaining;
-			//int reset;
-			//int resetAfter;
-			boost::asio::steady_timer reset;
+			QueueByRoute queues;
+			CountedSet<route_t> transit;
 			
-			CountedSet<std::size_t> transit;
-			std::deque<sptr < Call>> queue;
-			
-			
-			void insert(std::size_t hash, unsigned int transitCount){
-				transit.insert(hash, transitCount);
-			}
-			
-			unsigned int remove(std::size_t hash){
-				int transitCount = transit.count(hash);
-				transit.remove(hash, transitCount);
-				return transitCount;
-			}
+			int limit = 5;
+			int remaining = 4;
+			std::unique_ptr<boost::asio::steady_timer> reset;
 		};
 		
-		CountedSet<std::size_t> transit;
-		CountedSet<std::size_t> utransit;
-		std::deque<sptr < Call>> queue;
+		bool writing = false;
 		
-		bool active = false;
+		// These are for uncategorized calls
+		QueueByRoute queues;
+		CountedSet<route_t> transit;
 		
-		std::map<std::size_t, std::string> assigned;
+		std::map<route_t, std::string> route_to_bucket;
 		std::map<std::string, Bucket> buckets;
 		
-		Bucket *getNext(){
-			Bucket *next = nullptr;
-			std::time_t first = std::numeric_limits<std::time_t>::max();
-			for(auto &bucket : buckets){
-				if(
-					!bucket.second.queue.empty() &&
-					bucket.second.remaining - bucket.second.transit.total() > 0 &&
-					first > bucket.second.queue.front()->created
-				){
-					next = &bucket.second;
-					first = next->queue.front()->created;
-				}
-			}
-			return next;
-		}
-		
-		bool anyBucketLimited(){
-			for(auto &bucket : buckets){
-				if(bucket.second.remaining - bucket.second.transit.total() - utransit.total() <= 0){
-					return true;
-				}
-			}
-			return false;
-		}
-		
-		std::size_t getLimitedRoute(const std::string &route){
+		const route_t gateway_route = getLimitedRoute("/gateway/bot");
+		route_t getLimitedRoute(const std::string &route){
 			std::ostringstream out;
-			size_t last = route.find('\\');
-			size_t next = route.find('\\', last + 1);
+			route_t last = route.find('/');
+			route_t next = route.find('/', last + 1);
 			std::string lastItem;
 			while(last != std::string::npos){
-				std::string item = route.substr(last, next);
-				if(std::find_if_not(item.begin(), item.end(), [](char c){return isalpha(c);}) == item.end() ||
+				std::string item = route.substr(last + 1, next - 1);
+				out << "|";
+				if(std::all_of(item.begin(), item.end(), [](char c){return std::isalpha(c);}) ||
 				   lastItem == "channels" || lastItem == "guilds" || lastItem == "webhooks"){
 					out << item;
-				}else{
-					out << "|";
 				}
 				lastItem = item;
+				last = next;
+				next = route.find('/', last + 1);
 			}
 			return std::hash<std::string>{}(out.str());
 		}
