@@ -17,6 +17,7 @@ namespace discordpp{
 	public:
 		// The Discord API *typically* limits to 5 calls so use that for unknown buckets
 		int defaultLimit = 5;
+		bool unknownFirst = true;
 		
 		// Intercept calls
 		virtual void call(
@@ -87,7 +88,7 @@ namespace discordpp{
 			for(auto& qe : queues){
 				assert(!qe.second.empty() && "Encountered an empty global queue");
 				auto created = qe.second.front()->created;
-				if(created < min){
+				if(created < min || (unknownFirst && next_bucket != nullptr && !transit.count(qe.first))){
 					min = created;
 					next_bucket = nullptr;
 					next_queues = &queues;
