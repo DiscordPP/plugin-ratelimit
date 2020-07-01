@@ -125,73 +125,80 @@ namespace discordpp{
 			BASE::call(
 				call->requestType, call->targetURL, call->body,
 				std::make_shared<handleWrite>(
-					[this, route = next_route, call](){ // When the call is sent
-						(route_to_bucket.count(route)
-							? buckets[route_to_bucket[route]].transit
-							: transit
-						).insert(route);
+					[this, route = next_route, call](bool error){ // When the call is sent
+						if(!error){
+							(
+								route_to_bucket.count(route)
+								? buckets[route_to_bucket[route]].transit
+								: transit
+							).insert(route);
+						}
 						writing = false;
 						
 						// Check if the cycle continues
 						aioc->post([this]{do_some_work();});
 						
+						
 						// Run the user's onWrite callback
 						if(call->onWrite != nullptr){
-							(*call->onWrite)();
+							(*call->onWrite)(error);
 						}
 					}
 				),
 				std::make_shared<handleRead>(
-					[this, route = next_route, call](const json& msg){ // When Discord replies
+					[this, route = next_route, call](bool error, const json& msg){ // When Discord replies
 						auto* bucket = (
 							route_to_bucket.count(route)
 							? &buckets[route_to_bucket[route]]
 							: nullptr
 						);
-						auto& headers = msg["header"];
 						
 						(bucket ? bucket->transit : transit).erase(route);
 						
-						{
-							auto new_id = headers["X-RateLimit-Bucket"].get<std::string>();
-							if(!bucket || bucket->id != new_id){
-								auto* old_bucket = bucket;
-								
-								route_to_bucket[route] = new_id;
-								bucket = &buckets.emplace(new_id, Bucket{new_id}).first->second;
-								
-								std::cerr << "Migrating from " << (old_bucket ? old_bucket->id : "global") << " to " << bucket->id << '\n';
-								
-								bucket->queues.insert((old_bucket ? old_bucket->queues : queues).extract(route));
-								(old_bucket ? old_bucket->transit : transit).move(bucket->transit, route);
+						if(!error){
+							auto& headers = msg["header"];
+							{
+								auto new_id = headers["X-RateLimit-Bucket"].get<std::string>();
+								if(!bucket || bucket->id != new_id){
+									auto* old_bucket = bucket;
+									
+									route_to_bucket[route] = new_id;
+									bucket = &buckets.emplace(new_id, Bucket{new_id}).first->second;
+									
+									std::cerr << "Migrating from " << (old_bucket ? old_bucket->id : "global") << " to "
+									          << bucket->id << '\n';
+									
+									bucket->queues.insert((old_bucket ? old_bucket->queues : queues).extract(route));
+									(old_bucket ? old_bucket->transit : transit).move(bucket->transit, route);
+								}
 							}
+						
+							bucket->limit = std::stoi(headers["X-RateLimit-Limit"].get<std::string>());
+							bucket->remaining = std::min(bucket->remaining, std::stoi(headers["X-RateLimit-Remaining"].get<std::string>()));
+							
+							bucket->reset.reset();
+							bucket->reset = std::make_unique<boost::asio::steady_timer>(*aioc);
+							bucket->reset->expires_after(
+								std::chrono::seconds(std::stoi(headers["X-RateLimit-Reset-After"].get<std::string>()))
+							);
+							bucket->reset->async_wait(
+								[this, owner = bucket](const boost::system::error_code &e){
+									// Don't reset the limit if the timer is cancelled
+									if(e.failed()) return;
+									log::log(log::trace, [owner](std::ostream *log){
+										*log << "Limit reset for " << owner->id << '\n';
+									});
+									// Reset the limit
+									owner->remaining = owner->limit;
+									// Kickstart the message sending process
+									aioc->post([this]{do_some_work();});
+								}
+							);
 						}
-						
-						bucket->limit = std::stoi(headers["X-RateLimit-Limit"].get<std::string>());
-						bucket->remaining = std::min(bucket->remaining, std::stoi(headers["X-RateLimit-Remaining"].get<std::string>()));
-						
-						bucket->reset.reset();
-						bucket->reset = std::make_unique<boost::asio::steady_timer>(*aioc);
-						bucket->reset->expires_after(
-							std::chrono::seconds(std::stoi(headers["X-RateLimit-Reset-After"].get<std::string>()))
-						);
-						bucket->reset->async_wait(
-							[this, owner = bucket](const boost::system::error_code &e){
-								// Don't reset the limit if the timer is cancelled
-								if(e.failed()) return;
-								log::log(log::trace, [owner](std::ostream *log){
-									*log << "Limit reset for " << owner->id << '\n';
-								});
-								// Reset the limit
-								owner->remaining = owner->limit;
-								// Kickstart the message sending process
-								aioc->post([this]{do_some_work();});
-							}
-						);
 						
 						// Run the user's onRead callback
 						if(call->onRead != nullptr){
-							(*call->onRead)(msg);
+							(*call->onRead)(error, msg);
 						}
 					}
 				)
