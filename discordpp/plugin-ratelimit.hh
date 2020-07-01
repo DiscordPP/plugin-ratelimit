@@ -24,8 +24,8 @@ namespace discordpp{
 			sptr<const std::string> requestType,
 			sptr<const std::string> targetURL,
 			sptr<const json> body,
-			sptr<const std::function<void()>> onWrite,
-			sptr<const std::function<void(const json)>> onRead
+			sptr<const handleWrite> onWrite,
+			sptr<const handleRead> onRead
 		) override{
 			log::log(
 				log::trace, [targetURL, body](std::ostream *log){
@@ -124,7 +124,7 @@ namespace discordpp{
 			// Note: We are binding raw pointers and we must guarantee their lifetimes
 			BASE::call(
 				call->requestType, call->targetURL, call->body,
-				std::make_shared<std::function<void()>>(
+				std::make_shared<handleWrite>(
 					[this, route = next_route, call](){ // When the call is sent
 						(route_to_bucket.count(route)
 							? buckets[route_to_bucket[route]].transit
@@ -141,7 +141,7 @@ namespace discordpp{
 						}
 					}
 				),
-				std::make_shared<std::function<void(const json msg)>>(
+				std::make_shared<handleRead>(
 					[this, route = next_route, call](const json& msg){ // When Discord replies
 						auto* bucket = (
 							route_to_bucket.count(route)
@@ -203,8 +203,8 @@ namespace discordpp{
 			sptr<const std::string> targetURL;
 			route_t route;
 			sptr<const json> body;
-			sptr<const std::function<void()>> onWrite;
-			sptr<const std::function<void(const json)>> onRead;
+			sptr<const handleWrite> onWrite;
+			sptr<const handleRead> onRead;
 			std::time_t created = std::time(nullptr);
 		};
 		
