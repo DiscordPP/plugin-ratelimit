@@ -43,7 +43,7 @@ namespace discordpp{
 				onRead
 			});
 			
-			log::log(log::info, [the_call](std::ostream *log){
+			log::log(log::trace, [the_call](std::ostream *log){
 				*log << "Hashes as " << the_call->route << '\n';
 			});
 			
@@ -172,7 +172,7 @@ namespace discordpp{
 									route_to_bucket[route] = new_id;
 									bucket = &buckets.emplace(new_id, Bucket{new_id}).first->second;
 									
-									log::log(log::info, [old_bucket, bucket](std::ostream *log){
+									log::log(log::trace, [old_bucket, bucket](std::ostream *log){
 										*log << "Migrating from " << (old_bucket ? old_bucket->id : "global") << " to "
 										     << bucket->id << '\n';
 									});
