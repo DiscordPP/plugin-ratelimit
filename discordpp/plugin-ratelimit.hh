@@ -43,8 +43,12 @@ namespace discordpp{
 				onRead
 			});
 			
-			std::cerr << "Hash " << the_call->route << '\n';
+			log::log(log::info, [the_call](std::ostream *log){
+				*log << "Hashes as " << the_call->route << '\n';
+			});
 			
+			// Place the message in a bucket if possible,
+			// otherwise place it on the global queue
 			(route_to_bucket.count(the_call->route)
 				? buckets[route_to_bucket[the_call->route]].queues
 				: queues
@@ -60,6 +64,7 @@ namespace discordpp{
 			if(writing || blocked) return;
 			writing = true;
 			
+			// Find queue that needs to be sent next
 			Bucket* next_bucket = nullptr;
 			QueueByRoute* next_queues = nullptr;
 			CountedSet<route_t>* next_transit = nullptr;
@@ -68,7 +73,6 @@ namespace discordpp{
 			std::time_t min = std::numeric_limits<std::time_t>::max();
 			for(auto& be : buckets){
 				if(route_to_bucket.count(gateway_route) && route_to_bucket[gateway_route] == be.second.id) continue;
-				//assert(be.second.remaining >= be.second.transit.total() && "More messages in transit than remaining in a bucket");
 				min_remaining = std::min(min_remaining, int(be.second.remaining - (be.second.transit.total() + transit.total())));
 				if(be.second.remaining <= be.second.transit.total() + transit.total()) continue;
 				for(auto& qe : be.second.queues){
@@ -127,6 +131,7 @@ namespace discordpp{
 				std::make_shared<handleWrite>(
 					[this, route = next_route, call](bool error){ // When the call is sent
 						if(!error){
+							// Mark the message as counting against rate limits while in transit
 							(
 								route_to_bucket.count(route)
 								? buckets[route_to_bucket[route]].transit
@@ -147,17 +152,19 @@ namespace discordpp{
 				),
 				std::make_shared<handleRead>(
 					[this, route = next_route, call](bool error, const json& msg){ // When Discord replies
+						// Get the current bucket
 						auto* bucket = (
 							route_to_bucket.count(route)
 							? &buckets[route_to_bucket[route]]
 							: nullptr
 						);
 						
+						// This message is no longer in transit
 						(bucket ? bucket->transit : transit).erase(route);
 						
 						if(!error || msg["result"].get<int>() == 429){
 							auto& headers = msg["header"];
-							{
+							{ // Find the new bucket and transfer other messages with the same route
 								auto new_id = headers["X-RateLimit-Bucket"].get<std::string>();
 								if(!bucket || bucket->id != new_id){
 									auto* old_bucket = bucket;
@@ -165,16 +172,19 @@ namespace discordpp{
 									route_to_bucket[route] = new_id;
 									bucket = &buckets.emplace(new_id, Bucket{new_id}).first->second;
 									
-									std::cerr << "Migrating from " << (old_bucket ? old_bucket->id : "global") << " to "
-									          << bucket->id << '\n';
+									log::log(log::info, [old_bucket, bucket](std::ostream *log){
+										*log << "Migrating from " << (old_bucket ? old_bucket->id : "global") << " to "
+										     << bucket->id << '\n';
+									});
 									
 									bucket->queues.insert((old_bucket ? old_bucket->queues : queues).extract(route));
 									(old_bucket ? old_bucket->transit : transit).move(bucket->transit, route);
 								}
 							}
 							
+							// If ratelimited
 							if(msg["result"].get<int>() == 429){
-								if(msg["global"]){
+								if(msg["global"]){ // If global, block all messages
 									blocked = true;
 									reset.reset();
 									reset = std::make_unique<boost::asio::steady_timer>(*aioc);
@@ -194,7 +204,7 @@ namespace discordpp{
 											aioc->post([this]{do_some_work();});
 										}
 									);
-								}else{
+								}else{ // Otherwise block this bucket
 									bucket->remaining = 0;
 									bucket->reset.reset();
 									bucket->reset = std::make_unique<boost::asio::steady_timer>(*aioc);
@@ -216,12 +226,23 @@ namespace discordpp{
 									);
 								}
 								
+								// Requeue this call
+								call(
+									call->requestType,
+									call->targetURL,
+									call->body,
+									call->onWrite,
+									call->onRead
+								);
+								
 								return;
 							}
 						
+							// Set the buckets new limits
 							bucket->limit = std::stoi(headers["X-RateLimit-Limit"].get<std::string>());
 							bucket->remaining = std::min(bucket->remaining, std::stoi(headers["X-RateLimit-Remaining"].get<std::string>()));
 							
+							// Set a time for expiration of said limits
 							bucket->reset.reset();
 							bucket->reset = std::make_unique<boost::asio::steady_timer>(*aioc);
 							bucket->reset->expires_after(
