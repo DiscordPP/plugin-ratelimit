@@ -111,15 +111,15 @@ namespace discordpp{
 			
 			// Get the next call and delete its queue if empty
 			auto next_queue = next_queues->find(next_route);
-			auto call = next_queue->second.front();
+			auto the_call = next_queue->second.front();
 			next_queue->second.pop();
 			if(next_queue->second.empty()){
 				next_queues->erase(next_route);
 			}
 			
 			log::log(
-				log::trace, [call](std::ostream *log){
-					*log << "Plugin: RateLimit: " << "Sending " << *call->targetURL << (call->body ? call->body->dump(4) : "{}")
+				log::trace, [the_call](std::ostream *log){
+					*log << "Plugin: RateLimit: " << "Sending " << *the_call->targetURL << (the_call->body ? the_call->body->dump(4) : "{}")
 					     << '\n';
 				}
 			);
@@ -127,9 +127,9 @@ namespace discordpp{
 			// Do the call
 			// Note: We are binding raw pointers and we must guarantee their lifetimes
 			BASE::call(
-				call->requestType, call->targetURL, call->body,
+				the_call->requestType, the_call->targetURL, the_call->body,
 				std::make_shared<handleWrite>(
-					[this, route = next_route, call](bool error){ // When the call is sent
+					[this, route = next_route, the_call](bool error){ // When the call is sent
 						if(!error){
 							// Mark the message as counting against rate limits while in transit
 							(
@@ -145,13 +145,13 @@ namespace discordpp{
 						
 						
 						// Run the user's onWrite callback
-						if(call->onWrite != nullptr){
-							(*call->onWrite)(error);
+						if(the_call->onWrite != nullptr){
+							(*the_call->onWrite)(error);
 						}
 					}
 				),
 				std::make_shared<handleRead>(
-					[this, route = next_route, call](bool error, const json& msg){ // When Discord replies
+					[this, route = next_route, the_call](bool error, const json& msg){ // When Discord replies
 						// Get the current bucket
 						auto* bucket = (
 							route_to_bucket.count(route)
@@ -228,11 +228,11 @@ namespace discordpp{
 								
 								// Requeue this call
 								call(
-									call->requestType,
-									call->targetURL,
-									call->body,
-									call->onWrite,
-									call->onRead
+									the_call->requestType,
+									the_call->targetURL,
+									the_call->body,
+									the_call->onWrite,
+									the_call->onRead
 								);
 								
 								return;
@@ -264,8 +264,8 @@ namespace discordpp{
 						}
 						
 						// Run the user's onRead callback
-						if(call->onRead != nullptr){
-							(*call->onRead)(error, msg);
+						if(the_call->onRead != nullptr){
+							(*the_call->onRead)(error, msg);
 						}
 					}
 				)
