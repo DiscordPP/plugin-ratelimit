@@ -57,7 +57,7 @@ namespace discordpp{
 	private:
 		void do_some_work(){
 			// If already looping don't start a new loop
-			if(writing) return;
+			if(writing || blocked) return;
 			writing = true;
 			
 			Bucket* next_bucket = nullptr;
@@ -155,7 +155,7 @@ namespace discordpp{
 						
 						(bucket ? bucket->transit : transit).erase(route);
 						
-						if(!error){
+						if(!error || msg["result"].get<int>() == 429){
 							auto& headers = msg["header"];
 							{
 								auto new_id = headers["X-RateLimit-Bucket"].get<std::string>();
@@ -171,6 +171,52 @@ namespace discordpp{
 									bucket->queues.insert((old_bucket ? old_bucket->queues : queues).extract(route));
 									(old_bucket ? old_bucket->transit : transit).move(bucket->transit, route);
 								}
+							}
+							
+							if(msg["result"].get<int>() == 429){
+								if(msg["global"]){
+									blocked = true;
+									reset.reset();
+									reset = std::make_unique<boost::asio::steady_timer>(*aioc);
+									reset->expires_after(
+										std::chrono::milliseconds(headers["retry_after"].get<int>())
+									);
+									reset->async_wait(
+										[this](const boost::system::error_code &e){
+											// Don't reset the limit if the timer is cancelled
+											if(e.failed()) return;
+											log::log(log::trace, [](std::ostream *log){
+												*log << "Global rate limit has elapsed.\n";
+											});
+											// Reset the limit
+											blocked = false;
+											// Kickstart the message sending process
+											aioc->post([this]{do_some_work();});
+										}
+									);
+								}else{
+									bucket->remaining = 0;
+									bucket->reset.reset();
+									bucket->reset = std::make_unique<boost::asio::steady_timer>(*aioc);
+									bucket->reset->expires_after(
+										std::chrono::milliseconds(headers["retry_after"].get<int>())
+									);
+									bucket->reset->async_wait(
+										[this, owner = bucket](const boost::system::error_code &e){
+											// Don't reset the limit if the timer is cancelled
+											if(e.failed()) return;
+											log::log(log::trace, [owner](std::ostream *log){
+												*log << "Limit reset for " << owner->id << '\n';
+											});
+											// Reset the limit
+											owner->remaining = owner->limit;
+											// Kickstart the message sending process
+											aioc->post([this]{do_some_work();});
+										}
+									);
+								}
+								
+								return;
 							}
 						
 							bucket->limit = std::stoi(headers["X-RateLimit-Limit"].get<std::string>());
@@ -292,6 +338,8 @@ namespace discordpp{
 		// These are for uncategorized calls
 		QueueByRoute queues;
 		CountedSet<route_t> transit;
+		bool blocked = false;
+		std::unique_ptr<boost::asio::steady_timer> reset;
 		
 		std::map<route_t, std::string> route_to_bucket;
 		std::map<std::string, Bucket> buckets;
