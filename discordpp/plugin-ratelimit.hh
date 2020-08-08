@@ -66,7 +66,8 @@ template <class BASE> class PluginRateLimit : public BASE, virtual BotStruct {
         std::time_t min = std::numeric_limits<std::time_t>::max();
         for (auto &be : buckets) {
             if (route_to_bucket.count(gateway_route) &&
-                route_to_bucket[gateway_route] == be.second.id)
+                route_to_bucket[gateway_route] == be.second.id &&
+                be.second.queues.empty())
                 continue;
             min_remaining =
                 std::min(min_remaining,
