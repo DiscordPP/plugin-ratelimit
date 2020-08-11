@@ -60,7 +60,7 @@ template <class BASE> class PluginRateLimit : public BASE, virtual BotStruct {
         // Find queue that needs to be sent next
         Bucket *next_bucket = nullptr;
         QueueByRoute *next_queues = nullptr;
-        CountedSet<route_t> *next_transit = nullptr;
+        //CountedSet<route_t> *next_transit = nullptr;
         route_t next_route = 0;
         int min_remaining = defaultLimit;
         std::time_t min = std::numeric_limits<std::time_t>::max();
@@ -84,7 +84,7 @@ template <class BASE> class PluginRateLimit : public BASE, virtual BotStruct {
                     min = created;
                     next_bucket = &be.second;
                     next_queues = &be.second.queues;
-                    next_transit = &be.second.transit;
+                    //next_transit = &be.second.transit;
                     next_route = qe.first;
                 }
             }
@@ -99,7 +99,7 @@ template <class BASE> class PluginRateLimit : public BASE, virtual BotStruct {
                 min = created;
                 next_bucket = nullptr;
                 next_queues = &queues;
-                next_transit = &transit;
+                //next_transit = &transit;
                 next_route = qe.first;
             }
         }
