@@ -165,7 +165,7 @@ template <class BASE> class PluginRateLimit : public BASE, virtual BotStruct {
                 // This message is no longer in transit
                 (bucket ? bucket->transit : transit).erase(route);
 
-                if (!error || msg["result"].get<int>() == 429) {
+                if (msg.contains("header") && (!error || msg["result"].get<int>() == 429)) {
                     auto &headers = msg["header"];
                     { // Find the new bucket and transfer other messages with
                       // the same route
