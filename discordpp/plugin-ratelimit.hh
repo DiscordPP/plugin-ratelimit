@@ -52,10 +52,20 @@ template <class BASE> class PluginRateLimit : public BASE, virtual BotStruct {
 
   private:
     void do_some_work() {
+        log::log(log::trace, [](std::ostream *log) {
+          *log << "Check about doing work...";
+        });
         // If already looping don't start a new loop
-        if (writing || blocked)
+        if (writing || blocked) {
+            log::log(log::trace,
+                     [](std::ostream *log) { *log << " Not now."; });
             return;
+        }
         writing = true;
+        
+        log::log(log::trace, [](std::ostream *log) {
+          *log << " Can work...";
+        });
 
         // Find queue that needs to be sent next
         Bucket *next_bucket = nullptr;
@@ -109,9 +119,16 @@ template <class BASE> class PluginRateLimit : public BASE, virtual BotStruct {
         // If the uncategorized queue isn't empty and there's no chance of
         // overflowing a bucket, yes.
         if (!next_bucket && (queues.empty() || min_remaining <= 0)) {
+            log::log(log::trace, [](std::ostream *log) {
+              *log << " Nothing to do.";
+            });
             writing = false;
             return;
         }
+        
+        log::log(log::trace, [](std::ostream *log) {
+          *log << " Queueing.";
+        });
 
         // Get the next call and delete its queue if empty
         auto next_queue = next_queues->find(next_route);
