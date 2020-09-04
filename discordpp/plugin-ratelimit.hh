@@ -152,6 +152,8 @@ template <class BASE> class PluginRateLimit : public BASE, virtual BotStruct {
             std::make_shared<handleWrite>(
                 [this, route = next_route,
                  the_call](bool error) { // When the call is sent
+                    the_call->writeFailed = error;
+
                     if (!error) {
                         // Mark the message as counting against rate limits
                         // while in transit
@@ -180,9 +182,12 @@ template <class BASE> class PluginRateLimit : public BASE, virtual BotStruct {
                                     : nullptr);
 
                 // This message is no longer in transit
-                (bucket ? bucket->transit : transit).erase(route);
+                if (!the_call->writeFailed) {
+                    (bucket ? bucket->transit : transit).erase(route);
+                }
 
-                if (msg.contains("header") && (!error || msg["result"].get<int>() == 429)) {
+                if (msg.contains("header") &&
+                    (!error || msg["result"].get<int>() == 429)) {
                     auto &headers = msg["header"];
                     { // Find the new bucket and transfer other messages with
                       // the same route
@@ -317,6 +322,7 @@ template <class BASE> class PluginRateLimit : public BASE, virtual BotStruct {
         sptr<const handleWrite> onWrite;
         sptr<const handleRead> onRead;
         std::time_t created = std::time(nullptr);
+        bool writeFailed = false;
     };
 
     template <typename T> struct CountedSet {
