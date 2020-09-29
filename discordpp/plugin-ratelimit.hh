@@ -4,6 +4,7 @@
 #include <map>
 #include <queue>
 #include <set>
+#include <regex>
 
 #include <discordpp/log.hh>
 
