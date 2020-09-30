@@ -84,8 +84,8 @@ template <class BASE> class PluginRateLimit : public BASE, virtual BotStruct {
                 std::min(min_remaining,
                          int(be.second.remaining -
                              (be.second.transit.total() + transit.total())));
-            if (be.second.remaining <=
-                be.second.transit.total() + transit.total())
+            if ((long long) be.second.remaining <=
+                (long long) (be.second.transit.total() + transit.total()))
                 continue;
             for (auto &qe : be.second.queues) {
                 assert(!qe.second.empty() &&
