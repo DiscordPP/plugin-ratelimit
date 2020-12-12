@@ -210,7 +210,7 @@ template <class BASE> class PluginRateLimit : public BASE, virtual BotStruct {
 
                     // If ratelimited
                     if (msg["result"].get<int>() == 429) {
-                        if (msg["global"]) { // If global, block all messages
+                        if (msg["body"]["global"]) { // If global, block all messages
                             blocked = true;
                             reset.reset();
                             reset = std::make_unique<boost::asio::steady_timer>(
