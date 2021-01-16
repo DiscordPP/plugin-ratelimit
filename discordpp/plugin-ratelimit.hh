@@ -25,12 +25,12 @@ template <class BASE> class PluginRateLimit : public BASE, virtual BotStruct {
     virtual void call(sptr<Call> call) override {
         log::log(log::trace, [call](std::ostream *log) {
             *log << "Plugin: RateLimit: "
-                 << "Intercepted " << *call->targetURL
-                 << (call->body ? call->body->dump(4) : "{}") << '\n';
+                 << "Intercepted " << *call->targetURL_
+                 << (call->body_ ? call->body_->dump(4) : "{}") << '\n';
         });
 
         auto info = std::make_shared<CallInfo>(
-            CallInfo{call, getLimitedRoute(*call->targetURL)});
+            CallInfo{call, getLimitedRoute(*call->targetURL_)});
 
         log::log(log::trace, [info](std::ostream *log) {
             *log << "Hashes as " << info->route << '\n';
@@ -132,8 +132,8 @@ template <class BASE> class PluginRateLimit : public BASE, virtual BotStruct {
 
         log::log(log::trace, [info](std::ostream *log) {
             *log << "Plugin: RateLimit: "
-                 << "Sending " << *info->call->targetURL
-                 << (info->call->body ? info->call->body->dump(4) : "{}")
+                 << "Sending " << *info->call->targetURL_
+                 << (info->call->body_ ? info->call->body_->dump(4) : "{}")
                  << '\n';
         });
 
@@ -141,7 +141,7 @@ template <class BASE> class PluginRateLimit : public BASE, virtual BotStruct {
         // Note: We are binding raw pointers and we must guarantee their
         // lifetimes
         BASE::call(std::make_shared<Call>(Call{
-            info->call->requestType, info->call->targetURL, info->call->body,
+            info->call->requestType_, info->call->targetURL_, info->call->body_,
             std::make_shared<handleWrite>(
                 [this, route = next_route,
                  info](bool error) { // When the call is sent
@@ -161,8 +161,8 @@ template <class BASE> class PluginRateLimit : public BASE, virtual BotStruct {
                     aioc->post([this] { do_some_work(); });
 
                     // Run the user's onWrite callback
-                    if (info->call->onWrite != nullptr) {
-                        (*info->call->onWrite)(error);
+                    if (info->call->onWrite_ != nullptr) {
+                        (*info->call->onWrite_)(error);
                     }
                 }),
             std::make_shared<handleRead>([this, route = next_route, info](
@@ -299,8 +299,8 @@ template <class BASE> class PluginRateLimit : public BASE, virtual BotStruct {
                 }
 
                 // Run the user's onRead callback
-                if (info->call->onRead != nullptr) {
-                    (*info->call->onRead)(error, msg);
+                if (info->call->onRead_ != nullptr) {
+                    (*info->call->onRead_)(error, msg);
                 }
             })}));
     }
