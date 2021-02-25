@@ -22,15 +22,20 @@ template <class BASE> class PluginRateLimit : public BASE, virtual BotStruct {
     bool unknownFirst = true;
 
     // Intercept calls
-    virtual void call(sptr<Call> call) override {
+    virtual void doCall(sptr<RenderedCall> call) override {
         log::log(log::trace, [call](std::ostream *log) {
             *log << "Plugin: RateLimit: "
-                 << "Intercepted " << *call->targetURL
-                 << (call->body ? call->body->dump(4) : "{}") << '\n';
+                 << "Intercepted " << *call->target;
+            if (call->body) {
+                *log << call->body;
+            } else {
+                *log << " with no body";
+            }
+            *log << '\n';
         });
 
         auto info = std::make_shared<CallInfo>(
-            CallInfo{call, getLimitedRoute(*call->targetURL)});
+            CallInfo{call, getLimitedRoute(*call->target)});
 
         log::log(log::trace, [info](std::ostream *log) {
             *log << "Hashes as " << info->route << '\n';
@@ -65,7 +70,6 @@ template <class BASE> class PluginRateLimit : public BASE, virtual BotStruct {
         // Find queue that needs to be sent next
         Bucket *next_bucket = nullptr;
         QueueByRoute *next_queues = nullptr;
-        // CountedSet<route_t> *next_transit = nullptr;
         route_t next_route = 0;
         int min_remaining = defaultLimit;
         std::time_t min = std::numeric_limits<std::time_t>::max();
@@ -89,7 +93,6 @@ template <class BASE> class PluginRateLimit : public BASE, virtual BotStruct {
                     min = created;
                     next_bucket = &be.second;
                     next_queues = &be.second.queues;
-                    // next_transit = &be.second.transit;
                     next_route = qe.first;
                 }
             }
@@ -104,7 +107,6 @@ template <class BASE> class PluginRateLimit : public BASE, virtual BotStruct {
                 min = created;
                 next_bucket = nullptr;
                 next_queues = &queues;
-                // next_transit = &transit;
                 next_route = qe.first;
             }
         }
@@ -132,24 +134,34 @@ template <class BASE> class PluginRateLimit : public BASE, virtual BotStruct {
 
         log::log(log::trace, [info](std::ostream *log) {
             *log << "Plugin: RateLimit: "
-                 << "Sending " << *info->call->targetURL
-                 << (info->call->body ? info->call->body->dump(4) : "{}")
-                 << '\n';
+                 << "Sending " << *info->call->target;
+            if (info->call != nullptr) {
+                *log << ' ' << *info->call->target;
+                if (info->call->body) {
+                    *log << info->call->body;
+                } else {
+                    *log << " with no body";
+                }
+            }
+            *log << '\n';
         });
 
         // Do the call
         // Note: We are binding raw pointers and we must guarantee their
         // lifetimes
-        BASE::call(std::make_shared<Call>(Call{
-            info->call->requestType, info->call->targetURL, info->call->body,
-            std::make_shared<handleWrite>(
+        // Note: `BASE::doCall` is used directly here as `Call::run` would
+        // result in an infinite loop
+        BASE::doCall(std::make_shared<RenderedCall>(
+            info->call->method, info->call->target, info->call->type,
+            info->call->body,
+            std::make_shared<const handleWrite>(
                 [this, route = next_route,
                  info](bool error) { // When the call is sent
                     info->writeFailed = error;
 
                     if (!error) {
-                        // Mark the message as counting against rate limits
-                        // while in transit
+                        // Mark the message as counting against rate
+                        // limits while in transit
                         (route_to_bucket.count(route)
                              ? buckets[route_to_bucket[route]].transit
                              : transit)
@@ -165,10 +177,11 @@ template <class BASE> class PluginRateLimit : public BASE, virtual BotStruct {
                         (*info->call->onWrite)(error);
                     }
                 }),
-            std::make_shared<handleRead>([this, route = next_route, info](
-                                             bool error,
-                                             const json
-                                                 &msg) { // When Discord replies
+            std::make_shared<const handleRead>([this, route = next_route,
+                                                info](bool error,
+                                                      const json &
+                                                          msg) { // When Discord
+                                                                 // replies
                 // Get the current bucket
                 auto *bucket = (route_to_bucket.count(route)
                                     ? &buckets[route_to_bucket[route]]
@@ -182,8 +195,8 @@ template <class BASE> class PluginRateLimit : public BASE, virtual BotStruct {
                 if (msg.contains("header") &&
                     (!error || msg["result"].get<int>() == 429)) {
                     auto &headers = msg["header"];
-                    { // Find the new bucket and transfer other messages with
-                      // the same route
+                    { // Find the new bucket and transfer other messages
+                      // with the same route
                         auto new_id =
                             headers["X-RateLimit-Bucket"].get<std::string>();
                         if (!bucket || bucket->id != new_id) {
@@ -210,27 +223,29 @@ template <class BASE> class PluginRateLimit : public BASE, virtual BotStruct {
 
                     // If ratelimited
                     if (msg["result"].get<int>() == 429) {
-                        if (msg["body"]["global"]) { // If global, block all messages
+                        if (msg["body"]["global"]) { // If global, block all
+                                                     // messages
                             blocked = true;
                             reset.reset();
                             reset = std::make_unique<boost::asio::steady_timer>(
                                 *aioc);
                             reset->expires_after(std::chrono::milliseconds(
                                 headers["retry_after"].get<int>()));
-                            reset->async_wait([this](const boost::system::
-                                                         error_code &e) {
-                                // Don't reset the limit if the timer is
-                                // cancelled
-                                if (e.failed())
-                                    return;
-                                log::log(log::trace, [](std::ostream *log) {
-                                    *log << "Global rate limit has elapsed.\n";
+                            reset->async_wait(
+                                [this](const boost::system::error_code &e) {
+                                    // Don't reset the limit if the timer is
+                                    // cancelled
+                                    if (e.failed())
+                                        return;
+                                    log::log(log::trace, [](std::ostream *log) {
+                                        *log << "Global rate limit has "
+                                                "elapsed.\n";
+                                    });
+                                    // Reset the limit
+                                    blocked = false;
+                                    // Kickstart the message sending process
+                                    aioc->post([this] { do_some_work(); });
                                 });
-                                // Reset the limit
-                                blocked = false;
-                                // Kickstart the message sending process
-                                aioc->post([this] { do_some_work(); });
-                            });
                         } else { // Otherwise block this bucket
                             bucket->remaining = 0;
                             bucket->reset.reset();
@@ -260,7 +275,7 @@ template <class BASE> class PluginRateLimit : public BASE, virtual BotStruct {
                         }
 
                         // Requeue this call
-                        call(info->call);
+                        doCall(info->call);
 
                         return;
                     }
@@ -285,7 +300,8 @@ template <class BASE> class PluginRateLimit : public BASE, virtual BotStruct {
                     bucket->reset->async_wait(
                         [this,
                          owner = bucket](const boost::system::error_code &e) {
-                            // Don't reset the limit if the timer is cancelled
+                            // Don't reset the limit if the timer is
+                            // cancelled
                             if (e.failed())
                                 return;
                             log::log(log::trace, [owner](std::ostream *log) {
@@ -302,11 +318,11 @@ template <class BASE> class PluginRateLimit : public BASE, virtual BotStruct {
                 if (info->call->onRead != nullptr) {
                     (*info->call->onRead)(error, msg);
                 }
-            })}));
+            })));
     }
 
     struct CallInfo {
-        sptr<Call> call;
+        sptr<RenderedCall> call;
         route_t route;
         std::time_t created = std::time(nullptr);
         bool writeFailed = false;
@@ -314,9 +330,11 @@ template <class BASE> class PluginRateLimit : public BASE, virtual BotStruct {
 
     template <typename T> struct CountedSet {
         [[nodiscard]] size_t total() const { return sum; }
-    
-        [[nodiscard]] size_t count(T t) const { return (map.count(t) ? map.at(t) : 0); }
-    
+
+        [[nodiscard]] size_t count(T t) const {
+            return (map.count(t) ? map.at(t) : 0);
+        }
+
         [[nodiscard]] bool empty() const { return !sum; }
 
         void insert(T t, size_t count = 1) {
