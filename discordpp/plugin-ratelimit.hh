@@ -34,6 +34,8 @@ template <class BASE> class PluginRateLimit : public BASE, virtual BotStruct {
             *log << '\n';
         });
 
+        // Bundle the parameters together to pass them around easily
+        // and calculate a hash of the route
         auto info = std::make_shared<CallInfo>(
             CallInfo{call, getLimitedRoute(*call->target)});
 
