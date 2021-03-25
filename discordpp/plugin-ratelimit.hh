@@ -232,7 +232,7 @@ template <class BASE> class PluginRateLimit : public BASE, virtual BotStruct {
                             reset = std::make_unique<boost::asio::steady_timer>(
                                 *aioc);
                             reset->expires_after(std::chrono::milliseconds(
-                                headers["retry_after"].get<int>()));
+                                msg["body"]["retry_after"].get<int>()));
                             reset->async_wait(
                                 [this](const boost::system::error_code &e) {
                                     // Don't reset the limit if the timer is
@@ -256,7 +256,7 @@ template <class BASE> class PluginRateLimit : public BASE, virtual BotStruct {
                                     *aioc);
                             bucket->reset->expires_after(
                                 std::chrono::milliseconds(
-                                    headers["retry_after"].get<int>()));
+                                    msg["body"]["retry_after"].get<int>()));
                             bucket->reset->async_wait(
                                 [this, owner = bucket](
                                     const boost::system::error_code &e) {
