@@ -216,7 +216,8 @@ template <class BASE> class PluginRateLimit : public BASE, virtual BotStruct {
                             reset = std::make_unique<boost::asio::steady_timer>(
                                 *aioc);
                             reset->expires_after(std::chrono::milliseconds(
-                                msg["body"]["retry_after"].get<int>()));
+                                std::stoi(headers["X-RateLimit-Reset-After"]
+                                                     .get<std::string>())));
                             reset->async_wait([this](const boost::system::
                                                          error_code &e) {
                                 // Don't reset the limit if the timer is
@@ -239,7 +240,8 @@ template <class BASE> class PluginRateLimit : public BASE, virtual BotStruct {
                                     *aioc);
                             bucket->reset->expires_after(
                                 std::chrono::milliseconds(
-                                    msg["body"]["retry_after"].get<int>()));
+                                    std::stoi(headers["X-RateLimit-Reset-After"]
+                                                         .get<std::string>())));
                             bucket->reset->async_wait(
                                 [this, owner = bucket](
                                     const boost::system::error_code &e) {
@@ -271,17 +273,16 @@ template <class BASE> class PluginRateLimit : public BASE, virtual BotStruct {
                     bucket->remaining =
                         std::min(bucket->remaining,
                                  std::stoi(headers["X-RateLimit-Remaining"]
-                                               .get<std::string>()));
+                                                     .get<std::string>()));
 
                     // Set a time for expiration of said limits
                     bucket->reset.reset();
                     bucket->reset =
                         std::make_unique<boost::asio::steady_timer>(*aioc);
                     bucket->reset->expires_after(
-                        std::chrono::milliseconds(std::stoi(std::regex_replace(
-                            headers["X-RateLimit-Reset-After"]
-                                .get<std::string>(),
-                            std::regex(R"([\D])"), ""))));
+                        std::chrono::milliseconds(
+                            std::stoi(headers["X-RateLimit-Reset-After"]
+                                                 .get<std::string>())));
                     bucket->reset->async_wait(
                         [this,
                          owner = bucket](const boost::system::error_code &e) {
