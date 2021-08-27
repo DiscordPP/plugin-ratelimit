@@ -15,6 +15,9 @@ template <class BASE> class PluginRateLimit : public BASE, virtual BotStruct {
     struct CallInfo;
     using QueueByRoute = std::map<route_t, std::queue<sptr<CallInfo>>>;
 
+  protected:
+    void hasRateLimitPlugin() override{};
+
   public:
     // The Discord API *typically* limits to 5 calls so use that for unknown
     // buckets
@@ -254,9 +257,8 @@ template <class BASE> class PluginRateLimit : public BASE, virtual BotStruct {
                             bucket->reset =
                                 std::make_unique<boost::asio::steady_timer>(
                                     *aioc);
-                            bucket->reset->expires_after(
-                                std::chrono::seconds(
-                                    msg["body"]["retry_after"].get<int>()));
+                            bucket->reset->expires_after(std::chrono::seconds(
+                                msg["body"]["retry_after"].get<int>()));
                             bucket->reset->async_wait(
                                 [this, owner = bucket](
                                     const boost::system::error_code &e) {
@@ -325,7 +327,7 @@ template <class BASE> class PluginRateLimit : public BASE, virtual BotStruct {
 
     struct CallInfo {
         sptr<RenderedCall> call;
-        route_t route;
+        route_t route{};
         std::time_t created = std::time(nullptr);
         bool writeFailed = false;
     };
