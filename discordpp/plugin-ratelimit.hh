@@ -232,16 +232,16 @@ template <class BASE> class PluginRateLimit : public BASE, virtual BotStruct {
                                                      // messages
                             blocked = true;
                             reset.reset();
-                            reset = std::make_unique<boost::asio::steady_timer>(
-                                *aioc);
+                            reset = std::make_unique<asio::steady_timer>(*aioc);
                             reset->expires_after(std::chrono::seconds(
                                 msg["body"]["retry_after"].get<int>()));
                             reset->async_wait(
-                                [this](const boost::system::error_code &e) {
+                                [this](const error_code &e) {
                                     // Don't reset the limit if the timer is
                                     // cancelled
-                                    if (e.failed())
+                                    if (e) {
                                         return;
+                                    }
                                     log::log(log::trace, [](std::ostream *log) {
                                         *log << "Global rate limit has "
                                                 "elapsed.\n";
@@ -255,17 +255,17 @@ template <class BASE> class PluginRateLimit : public BASE, virtual BotStruct {
                             bucket->remaining = 0;
                             bucket->reset.reset();
                             bucket->reset =
-                                std::make_unique<boost::asio::steady_timer>(
-                                    *aioc);
+                                std::make_unique<asio::steady_timer>(*aioc);
                             bucket->reset->expires_after(std::chrono::seconds(
                                 msg["body"]["retry_after"].get<int>()));
                             bucket->reset->async_wait(
-                                [this, owner = bucket](
-                                    const boost::system::error_code &e) {
+                                [this,
+                                 owner = bucket](const error_code &e) {
                                     // Don't reset the limit if the timer is
                                     // cancelled
-                                    if (e.failed())
+                                    if (e) {
                                         return;
+                                    }
                                     log::log(log::trace,
                                              [owner](std::ostream *log) {
                                                  *log << "Limit reset for "
@@ -294,20 +294,19 @@ template <class BASE> class PluginRateLimit : public BASE, virtual BotStruct {
 
                     // Set a time for expiration of said limits
                     bucket->reset.reset();
-                    bucket->reset =
-                        std::make_unique<boost::asio::steady_timer>(*aioc);
+                    bucket->reset = std::make_unique<asio::steady_timer>(*aioc);
                     bucket->reset->expires_after(
                         std::chrono::milliseconds(std::stoi(std::regex_replace(
                             headers["X-RateLimit-Reset-After"]
                                 .get<std::string>(),
                             std::regex(R"([\D])"), ""))));
                     bucket->reset->async_wait(
-                        [this,
-                         owner = bucket](const boost::system::error_code &e) {
+                        [this, owner = bucket](const error_code &e) {
                             // Don't reset the limit if the timer is
                             // cancelled
-                            if (e.failed())
+                            if (e) {
                                 return;
+                            }
                             log::log(log::trace, [owner](std::ostream *log) {
                                 *log << "Limit reset for " << owner->id << '\n';
                             });
@@ -393,7 +392,7 @@ template <class BASE> class PluginRateLimit : public BASE, virtual BotStruct {
 
         int limit = 5;
         int remaining = 4;
-        std::unique_ptr<boost::asio::steady_timer> reset;
+        std::unique_ptr<asio::steady_timer> reset;
     };
 
     bool writing = false;
@@ -402,7 +401,7 @@ template <class BASE> class PluginRateLimit : public BASE, virtual BotStruct {
     QueueByRoute queues;
     CountedSet<route_t> transit;
     bool blocked = false;
-    std::unique_ptr<boost::asio::steady_timer> reset;
+    std::unique_ptr<asio::steady_timer> reset;
 
     std::map<route_t, std::string> route_to_bucket;
     std::map<std::string, Bucket> buckets;
