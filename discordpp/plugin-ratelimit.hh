@@ -76,7 +76,7 @@ template <class BASE> class PluginRateLimit : public BASE, virtual BotStruct {
         Bucket *next_bucket = nullptr;
         QueueByRoute *next_queues = nullptr;
         route_t next_route = 0;
-        int min_remaining = defaultLimit;
+        std::size_t min_remaining = defaultLimit;
         std::time_t min = std::numeric_limits<std::time_t>::max();
         for (auto &be : buckets) {
             if (route_to_bucket.count(gateway_route) &&
@@ -85,8 +85,8 @@ template <class BASE> class PluginRateLimit : public BASE, virtual BotStruct {
                 continue;
             min_remaining =
                 std::min(min_remaining,
-                         int(be.second.remaining -
-                             (be.second.transit.total() + transit.total())));
+                         be.second.remaining -
+                             (be.second.transit.total() + transit.total()));
             if (be.second.remaining <=
                 be.second.transit.total() + transit.total())
                 continue;
@@ -235,22 +235,21 @@ template <class BASE> class PluginRateLimit : public BASE, virtual BotStruct {
                             reset = std::make_unique<asio::steady_timer>(*aioc);
                             reset->expires_after(std::chrono::seconds(
                                 msg["body"]["retry_after"].get<int>()));
-                            reset->async_wait(
-                                [this](const error_code &e) {
-                                    // Don't reset the limit if the timer is
-                                    // cancelled
-                                    if (e) {
-                                        return;
-                                    }
-                                    log::log(log::trace, [](std::ostream *log) {
-                                        *log << "Global rate limit has "
-                                                "elapsed.\n";
-                                    });
-                                    // Reset the limit
-                                    blocked = false;
-                                    // Kickstart the message sending process
-                                    aioc->post([this] { do_some_work(); });
+                            reset->async_wait([this](const error_code &e) {
+                                // Don't reset the limit if the timer is
+                                // cancelled
+                                if (e) {
+                                    return;
+                                }
+                                log::log(log::trace, [](std::ostream *log) {
+                                    *log << "Global rate limit has "
+                                            "elapsed.\n";
                                 });
+                                // Reset the limit
+                                blocked = false;
+                                // Kickstart the message sending process
+                                aioc->post([this] { do_some_work(); });
+                            });
                         } else { // Otherwise block this bucket
                             bucket->remaining = 0;
                             bucket->reset.reset();
@@ -259,8 +258,7 @@ template <class BASE> class PluginRateLimit : public BASE, virtual BotStruct {
                             bucket->reset->expires_after(std::chrono::seconds(
                                 msg["body"]["retry_after"].get<int>()));
                             bucket->reset->async_wait(
-                                [this,
-                                 owner = bucket](const error_code &e) {
+                                [this, owner = bucket](const error_code &e) {
                                     // Don't reset the limit if the timer is
                                     // cancelled
                                     if (e) {
@@ -289,7 +287,7 @@ template <class BASE> class PluginRateLimit : public BASE, virtual BotStruct {
                         headers["X-RateLimit-Limit"].get<std::string>());
                     bucket->remaining =
                         std::min(bucket->remaining,
-                                 std::stoi(headers["X-RateLimit-Remaining"]
+                                 std::stoul(headers["X-RateLimit-Remaining"]
                                                .get<std::string>()));
 
                     // Set a time for expiration of said limits
@@ -390,8 +388,8 @@ template <class BASE> class PluginRateLimit : public BASE, virtual BotStruct {
         QueueByRoute queues;
         CountedSet<route_t> transit;
 
-        int limit = 5;
-        int remaining = 4;
+        std::size_t limit = 5;
+        std::size_t remaining = 4;
         std::unique_ptr<asio::steady_timer> reset;
     };
 
