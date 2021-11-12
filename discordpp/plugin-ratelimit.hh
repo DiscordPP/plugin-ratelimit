@@ -11,6 +11,13 @@
 namespace discordpp {
 using route_t = std::size_t;
 
+template <typename T> inline T stox(const std::string &s) {
+    std::istringstream iss(s);
+    T out;
+    iss >> out;
+    return out;
+}
+
 template <class BASE> class PluginRateLimit : public BASE, virtual BotStruct {
     struct CallInfo;
     using QueueByRoute = std::map<route_t, std::queue<sptr<CallInfo>>>;
@@ -283,12 +290,12 @@ template <class BASE> class PluginRateLimit : public BASE, virtual BotStruct {
                     }
 
                     // Set the buckets new limits
-                    bucket->limit = std::stoi(
+                    bucket->limit = stox<std::size_t>(
                         headers["X-RateLimit-Limit"].get<std::string>());
-                    bucket->remaining =
-                        std::min(bucket->remaining,
-                                 std::stoul(headers["X-RateLimit-Remaining"]
-                                               .get<std::string>()));
+                    bucket->remaining = std::min(
+                        bucket->remaining,
+                        stox<std::size_t>(headers["X-RateLimit-Remaining"]
+                                              .get<std::string>()));
 
                     // Set a time for expiration of said limits
                     bucket->reset.reset();
