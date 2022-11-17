@@ -129,12 +129,12 @@ template <class BASE> class PluginRateLimit : public BASE, virtual BotStruct {
         // overflowing a bucket, yes.
         if (!next_bucket && (queues.empty() || min_remaining <= 0)) {
             log::log(log::trace,
-                     [](std::ostream *log) { *log << " Nothing to do."; });
+                     [](std::ostream *log) { *log << " Nothing to do.\n"; });
             writing = false;
             return;
         }
 
-        log::log(log::trace, [](std::ostream *log) { *log << " Queueing."; });
+        log::log(log::trace, [](std::ostream *log) { *log << " Queueing.\n"; });
 
         // Get the next call and delete its queue if empty
         auto next_queue = next_queues->find(next_route);
